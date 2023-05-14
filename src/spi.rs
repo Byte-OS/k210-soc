@@ -78,6 +78,7 @@ pub trait SPI {
     fn set_clk_rate(&self, spi_clk: u32) -> u32;
     fn recv_data<X: TruncU32>(&self, chip_select: u32, rx: &mut [X]);
     fn recv_data_dma(&self, dmac: &DMAC, channel_num: dma_channel, chip_select: u32, rx: &mut [u32]);
+    fn recv_data_dma_8(&self, dmac: &DMAC, channel_num: dma_channel, chip_select: u32, rx: &mut [u8]);
     fn send_data<X: Into<u32> + Copy>(&self, chip_select: u32, tx: &[X]);
     fn send_data_dma(&self, dmac: &DMAC, channel_num: dma_channel, chip_select: u32, tx: &[u32]);
     fn fill_data(&self, chip_select: u32, value: u32, tx_len: usize);
@@ -211,6 +212,30 @@ impl<IF: SPI01> SPI for SPIImpl<IF> {
             dmac.set_single_mode(channel_num, self.spi.dr.as_ptr() as u64, rx.as_ptr() as u64,
                                  address_increment::NOCHANGE, address_increment::INCREMENT,
                                  burst_length::LENGTH_1, transfer_width::WIDTH_32, rx.len() as u32);
+            self.spi.dr[0].write(|w| w.bits(0xffffffff));
+            self.spi.ser.write(|w| w.bits(1 << chip_select));
+            dmac.wait_done(channel_num);
+
+            self.spi.ser.write(|w| w.bits(0x00));
+            self.spi.ssienr.write(|w| w.bits(0x00));
+        }
+    }
+        
+    /// Receive 32-bit data using DMA.
+    // make sure to set tmod to tmod::RECV
+    fn recv_data_dma_8(&self, dmac: &DMAC, channel_num: dma_channel, chip_select: u32, rx: &mut [u8]) {
+        if rx.len() == 0 {
+            return;
+        }
+        unsafe {
+            self.spi.ctrlr1.write(|w| w.bits((rx.len() - 1).try_into().unwrap()));
+            self.spi.ssienr.write(|w| w.bits(0x01));
+            self.spi.dmacr.write(|w| w.bits(0x3));    /*enable dma receive */
+
+            sysctl::dma_select(channel_num, IF::DMA_RX);
+            dmac.set_single_mode(channel_num, self.spi.dr.as_ptr() as u64, rx.as_ptr() as u64,
+                                 address_increment::NOCHANGE, address_increment::INCREMENT,
+                                 burst_length::LENGTH_1, transfer_width::WIDTH_8, rx.len() as u32);
             self.spi.dr[0].write(|w| w.bits(0xffffffff));
             self.spi.ser.write(|w| w.bits(1 << chip_select));
             dmac.wait_done(channel_num);
